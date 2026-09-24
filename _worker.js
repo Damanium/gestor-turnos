@@ -2,7 +2,6 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // Interceptar las peticiones de la API
     if (url.pathname.startsWith('/api/')) {
       const db = env.DB;
       if (!db) {
@@ -18,54 +17,97 @@ export default {
       };
 
       try {
-        // GET /api/tecnicos -> Obtener la lista de técnicos
-        if (url.pathname === '/api/tecnicos' && request.method === 'GET') {
-          const { results } = await db.prepare("SELECT * FROM tecnicos ORDER BY orden ASC").all();
+        // GET /api/technicians -> Obtener todos los técnicos ordenados por posición base
+        if (url.pathname === '/api/technicians' && request.method === 'GET') {
+          const { results } = await db.prepare("SELECT * FROM technicians ORDER BY base_pos ASC").all();
           return new Response(JSON.stringify(results), { headers });
         }
 
-        // POST /api/tecnicos -> Añadir, editar o cambiar turno de técnico
-        if (url.pathname === '/api/tecnicos' && request.method === 'POST') {
+        // POST /api/technicians -> Crear, actualizar o cambiar estado (activo/vacaciones)
+        if (url.pathname === '/api/technicians' && request.method === 'POST') {
           const body = await request.json();
 
           if (body.action === 'add') {
-            await db.prepare("INSERT INTO tecnicos (nombre, orden, es_turno_actual) VALUES (?, ?, 0)")
-                    .bind(body.nombre, body.orden || 99).run();
-          } else if (body.action === 'set_turno') {
-            await db.prepare("UPDATE tecnicos SET es_turno_actual = 0").run();
-            await db.prepare("UPDATE tecnicos SET es_turno_actual = 1 WHERE id = ?").bind(body.id).run();
+            await db.prepare("INSERT INTO technicians (name, base_pos, active) VALUES (?, ?, 1)")
+                    .bind(body.name, body.base_pos || 1).run();
+          } else if (body.action === 'toggle_active') {
+            await db.prepare("UPDATE technicians SET active = ? WHERE id = ?")
+                    .bind(body.active ? 1 : 0, body.id).run();
           } else if (body.action === 'delete') {
-            await db.prepare("DELETE FROM tecnicos WHERE id = ?").bind(body.id).run();
+            await db.prepare("DELETE FROM technicians WHERE id = ?").bind(body.id).run();
           }
 
           return new Response(JSON.stringify({ success: true }), { headers });
         }
 
-        // GET /api/incidencias -> Lista de incidencias
-        if (url.pathname === '/api/incidencias' && request.method === 'GET') {
+        // GET /api/jornadas/current -> Obtener la última jornada abierta
+        if (url.pathname === '/api/jornadas/current' && request.method === 'GET') {
+          const { results } = await db.prepare("SELECT * FROM jornadas ORDER BY id DESC LIMIT 1").all();
+          const currentJornada = results[0] || null;
+          return new Response(JSON.stringify(currentJornada), { headers });
+        }
+
+        // POST /api/jornadas -> Crear una nueva jornada laboral
+        if (url.pathname === '/api/jornadas' && request.method === 'POST') {
+          const body = await request.json();
+          const nowISO = new Date().toISOString();
+          const orderJson = JSON.stringify(body.order || []);
+
+          const res = await db.prepare(
+            "INSERT INTO jornadas (started_at, order_json, manual, valid) VALUES (?, ?, ?, ?)"
+          ).bind(nowISO, orderJson, body.manual ? 1 : 0, body.valid ? 1 : 0).run();
+
+          return new Response(JSON.stringify({ success: true, id: res.meta.last_row_id }), { headers });
+        }
+
+        // GET /api/assignments -> Obtener incidencias de una jornada específica
+        if (url.pathname === '/api/assignments' && request.method === 'GET') {
+          const jornadaId = url.searchParams.get('jornada_id');
+          if (!jornadaId) {
+            return new Response(JSON.stringify({ error: "Falta jornada_id" }), { status: 400, headers });
+          }
+
           const { results } = await db.prepare(`
-            SELECT i.*, t.nombre as tecnico_nombre 
-            FROM incidencias i 
-            LEFT JOIN tecnicos t ON i.tecnico_id = t.id 
-            ORDER BY i.fecha DESC
-          `).all();
+            SELECT a.*, COALESCE(t.name, '(eliminado)') as technician_name
+            FROM assignments a
+            LEFT JOIN technicians t ON a.technician_id = t.id
+            WHERE a.jornada_id = ?
+            ORDER BY a.seq ASC
+          `).bind(jornadaId).all();
+
           return new Response(JSON.stringify(results), { headers });
         }
 
-        // POST /api/incidencias -> Registrar incidencia y sumar al contador
-        if (url.pathname === '/api/incidencias' && request.method === 'POST') {
+        // POST /api/assignments -> Asignar una incidencia en la jornada activa
+        if (url.pathname === '/api/assignments' && request.method === 'POST') {
           const body = await request.json();
-          await db.prepare("INSERT INTO incidencias (tecnico_id, nota) VALUES (?, ?)")
-                  .bind(body.tecnico_id, body.nota || "").run();
-          await db.prepare("UPDATE tecnicos SET incidencias_totales = incidencias_totales + 1 WHERE id = ?")
-                  .bind(body.tecnico_id).run();
+          const nowISO = new Date().toISOString();
 
-          return new Response(JSON.stringify({ success: true }), { headers });
+          // Obtener el número correlativo (seq) dentro de la misma jornada
+          const seqRes = await db.prepare(
+            "SELECT COALESCE(MAX(seq), 0) + 1 as next_seq FROM assignments WHERE jornada_id = ?"
+          ).bind(body.jornada_id).first();
+
+          const nextSeq = seqRes ? seqRes.next_seq : 1;
+
+          await db.prepare(`
+            INSERT INTO assignments (jornada_id, seq, technician_id, note, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `).bind(body.jornada_id, nextSeq, body.technician_id, body.note || "", nowISO).run();
+
+          return new Response(JSON.stringify({ success: true, seq: nextSeq }), { headers });
         }
 
-        // GET /api/ranking -> Ranking de incidencias
+        // GET /api/ranking -> Estadísticas históricas de incidencias asignadas por técnico
         if (url.pathname === '/api/ranking' && request.method === 'GET') {
-          const { results } = await db.prepare("SELECT nombre, incidencias_totales FROM tecnicos ORDER BY incidencias_totales DESC").all();
+          const { results } = await db.prepare(`
+            SELECT COALESCE(t.name, '(eliminado)') as name, COUNT(a.id) as total_assignments
+            FROM assignments a
+            LEFT JOIN technicians t ON a.technician_id = t.id
+            GROUP BY a.technician_id
+            ORDER BY total_assignments DESC
+          `).all();
+
           return new Response(JSON.stringify(results), { headers });
         }
 
@@ -75,7 +117,7 @@ export default {
       }
     }
 
-    // Servir la interfaz y recursos estáticos (HTML, CSS, JS)
+    // Servir los archivos estáticos de la interfaz web
     return env.ASSETS.fetch(request);
   }
 };
