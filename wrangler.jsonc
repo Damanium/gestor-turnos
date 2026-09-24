@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gestor-turnos",
+  "main": "_worker.js",
+  "compatibility_date": "2026-09-21",
+  "assets": {
+    "directory": "."
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "rotacion-sedes",
+      "database_id": "3a78ce82-7598-4699-b993-ab716b6528d0"
+    }
+  ]
+}
