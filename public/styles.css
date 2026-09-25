@@ -373,3 +373,105 @@ details summary { cursor: pointer; font-weight: 600; font-size: 15px; }
 @media (prefers-reduced-motion: reduce) {
   .split-char { transition: none !important; }
 }
+
+/* ---------- páginas de acceso (puente / admin) ---------- */
+
+.wrap-auth {
+  min-height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  padding: 28px 16px;
+}
+
+.auth-card {
+  width: 100%; max-width: 380px;
+  background: var(--card-solid); border: 1px solid var(--line-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+  padding: 32px 28px;
+}
+.auth-card h1 { margin: 0 0 6px; font-size: 22px; }
+.auth-sub { margin: 0 0 22px; color: var(--muted); font-size: 14px; }
+
+.auth-field { display: block; margin-bottom: 16px; }
+.auth-field span { display: block; margin-bottom: 6px; font-size: 13.5px; color: var(--muted); }
+.auth-field input, .auth-field select {
+  width: 100%; font: inherit; color: var(--ink);
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px;
+}
+.auth-field input:focus, .auth-field select:focus,
+.auth-field input:focus-visible, .auth-field select:focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 1px;
+}
+
+.btn-primary {
+  background: var(--primary); color: #04121c; border-color: transparent; font-weight: 700;
+}
+.btn-primary:hover { background: color-mix(in srgb, var(--primary) 88%, white); }
+.btn-secondary {
+  background: var(--secondary); color: #041c11; border-color: transparent; font-weight: 700;
+}
+.btn-secondary:hover { background: color-mix(in srgb, var(--secondary) 88%, white); }
+
+.auth-submit { width: 100%; padding: 11px; margin-top: 4px; }
+
+.auth-error {
+  margin: 0 0 14px; padding: 9px 11px; border-radius: 9px; font-size: 13.5px;
+  color: var(--danger); background: color-mix(in srgb, var(--danger) 13%, transparent);
+}
+.admin-ok {
+  margin: 0 0 14px; padding: 9px 11px; border-radius: 9px; font-size: 13.5px;
+  color: var(--secondary); background: color-mix(in srgb, var(--secondary) 15%, transparent);
+}
+
+.auth-admin-link {
+  display: block; margin-top: 20px; text-align: center;
+  color: var(--muted); font-size: 13px; text-decoration: none;
+}
+.auth-admin-link:hover { color: var(--ink); text-decoration: underline; }
+
+/* ---------- barra superior: badge de sede + cambiar de sede ---------- */
+
+.site-badge {
+  font-size: 12.5px; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px;
+}
+.link-btn {
+  font: inherit; font-size: 12.5px; color: var(--muted); background: none; border: none;
+  cursor: pointer; text-decoration: underline; padding: 0;
+}
+.link-btn:hover { color: var(--ink); }
+
+/* ---------- panel de administración ---------- */
+
+.admin-panel { width: 100%; max-width: 640px; }
+.admin-panel-header {
+  display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px;
+}
+.admin-panel-header h1 { margin: 0; font-size: 22px; }
+.admin-subtitulo { font-size: 16px; margin: 28px 0 12px; }
+
+.sites-list { display: flex; flex-direction: column; gap: 10px; }
+.site-row {
+  background: var(--card-solid); border: 1px solid var(--line);
+  border-radius: 12px; padding: 14px 16px;
+}
+.site-row-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.site-row-name { font-size: 15px; }
+.site-row-code { font-size: 12.5px; color: var(--muted); font-family: monospace; }
+.site-row-badge { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; margin-left: auto; }
+.badge-on { background: color-mix(in srgb, var(--secondary) 20%, transparent); color: var(--secondary); }
+.badge-off { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+.badge-warn { background: var(--warn-bg); color: var(--warn-ink); }
+
+.site-row-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.site-row-password-form { display: flex; gap: 8px; flex: 1; min-width: 220px; }
+.site-row-password {
+  flex: 1; font: inherit; color: var(--ink);
+  background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 10px;
+}
+
+.new-site-form {
+  background: var(--card-solid); border: 1px solid var(--line);
+  border-radius: 12px; padding: 16px;
+}

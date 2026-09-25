@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Rotación de técnicos — Administración</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="bg" class="bg-rays" aria-hidden="true"></div>
+    <main class="wrap wrap-auth">
+      <section id="admin-login-card" class="auth-card" aria-labelledby="admin-titulo">
+        <h1 id="admin-titulo">Panel de administración</h1>
+        <p class="auth-sub">Introduce la contraseña de administrador.</p>
+
+        <form id="admin-login-form" novalidate>
+          <label class="auth-field">
+            <span>Contraseña de administrador</span>
+            <input id="admin-password" type="password" autocomplete="current-password" required />
+          </label>
+
+          <p id="admin-login-error" class="auth-error" role="status" aria-live="polite" hidden></p>
+
+          <button id="admin-login-btn" type="submit" class="btn btn-primary auth-submit">Entrar</button>
+        </form>
+
+        <a href="/index.html" class="auth-admin-link">← Volver al acceso normal</a>
+      </section>
+
+      <section id="admin-panel" class="admin-panel" hidden aria-labelledby="admin-titulo">
+        <header class="admin-panel-header">
+          <h1>Sedes</h1>
+          <button id="admin-logout" class="btn btn-ghost" type="button">Cerrar sesión</button>
+        </header>
+
+        <p id="admin-panel-error" class="auth-error" role="status" aria-live="polite" hidden></p>
+        <p id="admin-panel-ok" class="admin-ok" role="status" aria-live="polite" hidden></p>
+
+        <div id="sites-list" class="sites-list"></div>
+
+        <h2 class="admin-subtitulo">Nueva sede</h2>
+        <form id="new-site-form" class="new-site-form" novalidate>
+          <label class="auth-field">
+            <span>Código (sin espacios, ej. "norte")</span>
+            <input id="new-site-code" type="text" pattern="[a-z0-9_-]{2,40}" required />
+          </label>
+          <label class="auth-field">
+            <span>Nombre completo</span>
+            <input id="new-site-name" type="text" required />
+          </label>
+          <button type="submit" class="btn btn-primary">Crear sede</button>
+        </form>
+      </section>
+    </main>
+
+    <template id="site-row-template">
+      <article class="site-row">
+        <div class="site-row-main">
+          <strong class="site-row-name"></strong>
+          <span class="site-row-code"></span>
+          <span class="site-row-badge"></span>
+        </div>
+        <div class="site-row-actions">
+          <button type="button" class="btn btn-ghost btn-toggle">Desactivar</button>
+          <form class="site-row-password-form">
+            <input type="password" class="site-row-password" placeholder="Nueva contraseña" minlength="6" />
+            <button type="submit" class="btn btn-secondary">Guardar contraseña</button>
+          </form>
+        </div>
+      </article>
+    </template>
+
+    <script type="module" src="/admin.js"></script>
+  </body>
+</html>

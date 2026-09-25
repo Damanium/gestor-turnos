@@ -1,9 +1,15 @@
 // _worker.js — API de rotación de técnicos (Cloudflare Worker + D1)
 //
 // Multi-sede: cada jornada, técnico y asignación va asociada a una sede.
-// Sedes soportadas por defecto:
-// - ramirez: Consejeria de Eco. Hac. y Empleo - Ramirez de Prado, 5 BIS
-// - octubre: H.U 12 de Octubre - Gta. Málaga, 11
+// Las sedes se crean y gestionan desde el panel de administración
+// (/api/admin/sites*), no hay ninguna fija en el código.
+//
+// Acceso: cada sede tiene su propia contraseña (PBKDF2 + sal, en la tabla
+// `sites`). Al hacer login se firma un token (HMAC-SHA256) válido 12h que
+// hay que mandar como "Authorization: Bearer <token>" en cada llamada a
+// /api/*. Hay un segundo login de administrador (contraseña en secrets de
+// Cloudflare, no en D1) para /api/admin/*. Tras 3 fallos seguidos se
+// bloquean los intentos 30s (por sede/admin + IP).
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -18,18 +24,8 @@ const json = (data, status = 200) =>
     headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
   });
 
-const SITE_DEFS = {
-  ramirez: "Consejeria de Eco. Hac. y Empleo - Ramirez de Prado, 5 BIS",
-  octubre: "H.U 12 de Octubre - Gta. Málaga, 11",
-};
-const DEFAULT_SITE_CODE = "ramirez";
-
 function normalizeSiteCode(value) {
-  const raw = String(value ?? "").trim().toLowerCase();
-  if (!raw) return DEFAULT_SITE_CODE;
-  if (raw.includes("octubre") || raw.includes("malaga") || raw === "h.u") return "octubre";
-  if (raw.includes("ramirez") || raw.includes("prado") || raw.includes("eco") || raw.includes("empleo")) return "ramirez";
-  return DEFAULT_SITE_CODE;
+  return String(value ?? "").trim().toLowerCase();
 }
 
 // NOTA: el esquema (tablas sites/technicians/jornadas/assignments con site_id)
@@ -38,30 +34,259 @@ function normalizeSiteCode(value) {
 // -- D1 lo rechaza con "D1_EXEC_ERROR: incomplete input" -- por eso todo lo
 // de aquí en adelante usa sentencias preparadas (prepare/bind), una por línea.
 
-async function getSiteByCode(db, code) {
+/** Busca una sede por código. Ya NO la crea si no existe: crearlas es cosa
+ *  del panel de administración (ver adminRoutes.createSite). */
+async function findSiteByCode(db, code) {
   const normalized = normalizeSiteCode(code);
-  let site = await db
-    .prepare("SELECT id, code, name FROM sites WHERE code = ?")
+  if (!normalized) return null;
+  return db
+    .prepare("SELECT id, code, name, active, password_hash, password_salt FROM sites WHERE code = ?")
     .bind(normalized)
     .first();
+}
 
-  if (!site) {
-    const now = new Date().toISOString();
-    const name = SITE_DEFS[normalized] || normalized;
-    await db
-      .prepare("INSERT INTO sites (code, name, active, created_at) VALUES (?, ?, 1, ?)")
-      .bind(normalized, name, now)
-      .run();
-    site = await db.prepare("SELECT id, code, name FROM sites WHERE code = ?").bind(normalized).first();
+// ---------------------------------------------------------------------------
+// Autenticación: contraseña por sede (PBKDF2) + token firmado (HMAC) + freno
+// a fuerza bruta. Todo con Web Crypto, sin librerías externas.
+// ---------------------------------------------------------------------------
+
+const TOKEN_TTL_SECONDS = 12 * 60 * 60; // 12 horas
+const MAX_LOGIN_ATTEMPTS = 3;
+const LOGIN_BLOCK_SECONDS = 30;
+const PBKDF2_ITERATIONS = 100000;
+
+function bytesToB64(bytes) {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin);
+}
+function b64ToBytes(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+function b64url(bytes) {
+  return bytesToB64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64urlToBytes(str) {
+  return b64ToBytes(str.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((str.length + 3) % 4));
+}
+/** Comparación en tiempo constante para no filtrar por cuánto tarda la respuesta. */
+function timingSafeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function pbkdf2(password, saltBytes) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, [
+    "deriveBits",
+  ]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: saltBytes, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    key,
+    256
+  );
+  return bytesToB64(new Uint8Array(bits));
+}
+
+/** Genera un hash + sal nuevos para una contraseña (al fijarla desde el panel de admin). */
+async function hashPassword(password) {
+  const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await pbkdf2(password, saltBytes);
+  return { hash, salt: bytesToB64(saltBytes) };
+}
+
+/** Comprueba una contraseña contra el hash+sal guardados. */
+async function verifyPassword(password, saltB64, hashB64) {
+  if (!saltB64 || !hashB64) return false;
+  const computed = await pbkdf2(password, b64ToBytes(saltB64));
+  return timingSafeEqual(computed, hashB64);
+}
+
+async function hmacKey(secret) {
+  return crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+    "verify",
+  ]);
+}
+
+/** Token: base64url(payload JSON) + "." + base64url(firma HMAC). Sin dependencias tipo JWT. */
+async function signToken(payload, secret) {
+  const data = b64url(new TextEncoder().encode(JSON.stringify(payload)));
+  const sig = await crypto.subtle.sign("HMAC", await hmacKey(secret), new TextEncoder().encode(data));
+  return `${data}.${b64url(new Uint8Array(sig))}`;
+}
+
+/** Devuelve el payload si el token es válido y no ha caducado; si no, null. */
+async function verifyToken(token, secret) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const [data, sig] = token.split(".");
+  if (!data || !sig) return null;
+  const expectedSig = await crypto.subtle.sign("HMAC", await hmacKey(secret), new TextEncoder().encode(data));
+  if (!timingSafeEqual(sig, b64url(new Uint8Array(expectedSig)))) return null;
+  let payload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(data)));
+  } catch {
+    return null;
   }
-
-  return site;
+  if (typeof payload.exp !== "number" || payload.exp < Math.floor(Date.now() / 1000)) return null;
+  return payload;
 }
 
-async function getSites(db) {
-  const { results } = await db.prepare("SELECT id, code, name FROM sites ORDER BY name ASC").all();
-  return results || [];
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
+
+function clientIp(request) {
+  return request.headers.get("CF-Connecting-IP") || "0.0.0.0";
+}
+
+/** Corta el paso si ya hay demasiados fallos recientes para esta sede/admin + IP. */
+async function assertNotBlocked(db, scope, ipHash) {
+  const row = await db
+    .prepare("SELECT blocked_until FROM login_attempts WHERE scope = ? AND ip_hash = ?")
+    .bind(scope, ipHash)
+    .first();
+  if (row?.blocked_until && new Date(row.blocked_until).getTime() > Date.now()) {
+    throw new HttpError(429, "Demasiados intentos. Espera unos segundos y vuelve a intentarlo.");
+  }
+}
+
+/** Registra el resultado de un intento de login: limpia el contador si acierta,
+ *  lo sube y bloquea unos segundos si encadena MAX_LOGIN_ATTEMPTS fallos. */
+async function recordLoginAttempt(db, scope, ipHash, success) {
+  if (success) {
+    await db.prepare("DELETE FROM login_attempts WHERE scope = ? AND ip_hash = ?").bind(scope, ipHash).run();
+    return;
+  }
+  const row = await db
+    .prepare("SELECT attempts FROM login_attempts WHERE scope = ? AND ip_hash = ?")
+    .bind(scope, ipHash)
+    .first();
+  const attempts = (row?.attempts || 0) + 1;
+  const blockedUntil =
+    attempts >= MAX_LOGIN_ATTEMPTS ? new Date(Date.now() + LOGIN_BLOCK_SECONDS * 1000).toISOString() : null;
+  await db
+    .prepare(
+      `INSERT INTO login_attempts (scope, ip_hash, attempts, blocked_until, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(scope, ip_hash) DO UPDATE SET attempts = excluded.attempts,
+         blocked_until = excluded.blocked_until, updated_at = excluded.updated_at`
+    )
+    .bind(scope, ipHash, attempts, blockedUntil, new Date().toISOString())
+    .run();
+  if (blockedUntil) throw new HttpError(429, "Demasiados intentos. Espera unos segundos y vuelve a intentarlo.");
+}
+
+/** GET /api/sites (público): nunca expone password_hash/password_salt. */
+async function listPublicSites(db) {
+  const { results } = await db
+    .prepare(
+      "SELECT code, name, (password_hash IS NOT NULL) AS has_password FROM sites WHERE active = 1 ORDER BY name ASC"
+    )
+    .all();
+  return { sites: (results || []).map((s) => ({ ...s, has_password: !!s.has_password })) };
+}
+
+/** POST /api/auth/login: { site, password } -> { token, expires_at, site } */
+async function siteLogin(env, request) {
+  const body = await readBody(request);
+  const code = normalizeSiteCode(body.site);
+  if (!code) throw new HttpError(400, "Falta indicar la sede");
+  const password = typeof body.password === "string" ? body.password : "";
+  const ipHash = await sha256Hex(clientIp(request) + ":" + code);
+
+  await assertNotBlocked(env.DB, code, ipHash);
+  const site = await findSiteByCode(env.DB, code);
+  const valid = site && site.active && (await verifyPassword(password, site.password_salt, site.password_hash));
+  await recordLoginAttempt(env.DB, code, ipHash, !!valid);
+  if (!valid) throw new HttpError(401, "Sede o contraseña incorrectas");
+
+  const exp = Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS;
+  const token = await signToken({ site: site.code, exp }, env.TOKEN_SECRET);
+  return { token, expires_at: exp * 1000, site: { code: site.code, name: site.name } };
+}
+
+/** POST /api/auth/admin-login: { password } -> { token, expires_at } */
+async function adminLogin(env, request) {
+  const body = await readBody(request);
+  const password = typeof body.password === "string" ? body.password : "";
+  const ipHash = await sha256Hex(clientIp(request) + ":admin");
+
+  await assertNotBlocked(env.DB, "admin", ipHash);
+  const valid =
+    !!env.ADMIN_PASSWORD_HASH &&
+    !!env.ADMIN_PASSWORD_SALT &&
+    (await verifyPassword(password, env.ADMIN_PASSWORD_SALT, env.ADMIN_PASSWORD_HASH));
+  await recordLoginAttempt(env.DB, "admin", ipHash, valid);
+  if (!valid) throw new HttpError(401, "Contraseña de administrador incorrecta");
+
+  const exp = Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS;
+  const token = await signToken({ admin: true, exp }, env.TOKEN_SECRET);
+  return { token, expires_at: exp * 1000 };
+}
+
+/** Rutas del panel de administración (requieren token con admin:true). */
+const adminRoutes = {
+  "GET /api/admin/sites": async (db) => {
+    const { results } = await db
+      .prepare("SELECT code, name, active, (password_hash IS NOT NULL) AS has_password, updated_at FROM sites ORDER BY name ASC")
+      .all();
+    return { sites: (results || []).map((s) => ({ ...s, active: !!s.active, has_password: !!s.has_password })) };
+  },
+
+  "POST /api/admin/sites": async (db, req) => {
+    const body = await readBody(req);
+    const code = normalizeSiteCode(body.code);
+    if (!code || !/^[a-z0-9_-]{2,40}$/.test(code)) {
+      throw new HttpError(400, "El código de sede solo puede tener letras, números, guiones y guion bajo");
+    }
+    const name = toText(body.name, { max: 120, required: true, label: "El nombre de la sede" });
+    const now = new Date().toISOString();
+    try {
+      await db
+        .prepare("INSERT INTO sites (code, name, active, created_at, updated_at) VALUES (?, ?, 1, ?, ?)")
+        .bind(code, name, now, now)
+        .run();
+    } catch {
+      throw new HttpError(409, "Ya existe una sede con ese código");
+    }
+    return { site: { code, name, active: true, has_password: false } };
+  },
+
+  "POST /api/admin/sites/password": async (db, req) => {
+    const body = await readBody(req);
+    const code = normalizeSiteCode(body.site);
+    const site = await findSiteByCode(db, code);
+    if (!site) throw new HttpError(404, "Sede no encontrada");
+    const password = typeof body.password === "string" ? body.password : "";
+    if (password.length < 6) throw new HttpError(400, "La contraseña debe tener al menos 6 caracteres");
+    const { hash, salt } = await hashPassword(password);
+    await db
+      .prepare("UPDATE sites SET password_hash = ?, password_salt = ?, updated_at = ? WHERE id = ?")
+      .bind(hash, salt, new Date().toISOString(), site.id)
+      .run();
+    return { ok: true };
+  },
+
+  "POST /api/admin/sites/toggle": async (db, req) => {
+    const body = await readBody(req);
+    const code = normalizeSiteCode(body.site);
+    const site = await findSiteByCode(db, code);
+    if (!site) throw new HttpError(404, "Sede no encontrada");
+    await db
+      .prepare("UPDATE sites SET active = ?, updated_at = ? WHERE id = ?")
+      .bind(body.active ? 1 : 0, new Date().toISOString(), site.id)
+      .run();
+    return { ok: true };
+  },
+};
 
 // ---------------------------------------------------------------------------
 // Reglas de rotación. Todo lo que decide "quién va primero" y "qué es válido"
@@ -318,12 +543,8 @@ async function advanceDay(db, siteId) {
 const RANGE_DAYS = { week: 7, month: 30, all: null };
 
 const routes = {
-  "GET /api/sites": async (db) => {
-    const sites = await getSites(db);
-    return { sites };
-  },
-
   "GET /api/state": (db, req, url, site) => loadState(db, site.id),
+
 
   "POST /api/incidents": async (db, req, url, site) => {
     const body = await readBody(req);
@@ -486,6 +707,10 @@ const routes = {
 
 // ---------------------------------------------------------------------------
 
+// Rutas que no requieren token: el login en sí, y la lista pública de sedes
+// (sin contraseñas) que rellena el desplegable de la página puente.
+const PUBLIC_ROUTES = new Set(["GET /api/sites", "POST /api/auth/login", "POST /api/auth/admin-login"]);
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -493,9 +718,7 @@ export default {
 
     try {
       if (!env.DB) throw new HttpError(500, "Base de datos D1 no vinculada (DB)");
-
-      const siteCode = normalizeSiteCode(url.searchParams.get("site") || url.searchParams.get("sede") || DEFAULT_SITE_CODE);
-      const site = await getSiteByCode(env.DB, siteCode);
+      if (!env.TOKEN_SECRET) throw new HttpError(500, "Falta configurar el secreto TOKEN_SECRET");
 
       // Solo se aceptan escrituras desde esta misma web (no desde otros sitios).
       const origin = request.headers.get("Origin");
@@ -503,7 +726,36 @@ export default {
         throw new HttpError(403, "Origen no permitido");
       }
 
-      const handler = routes[`${request.method} ${url.pathname}`];
+      const routeKey = `${request.method} ${url.pathname}`;
+
+      // 1) Rutas públicas: login de sede, login de admin, y la lista de sedes.
+      if (routeKey === "GET /api/sites") return json(await listPublicSites(env.DB));
+      if (routeKey === "POST /api/auth/login") return json(await siteLogin(env, request));
+      if (routeKey === "POST /api/auth/admin-login") return json(await adminLogin(env, request));
+
+      // A partir de aquí hace falta un token válido (Authorization: Bearer <token>).
+      const authHeader = request.headers.get("Authorization") || "";
+      const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+      if (!token) throw new HttpError(401, "Falta iniciar sesión");
+      const payload = await verifyToken(token, env.TOKEN_SECRET);
+      if (!payload) throw new HttpError(401, "La sesión no es válida o ha caducado");
+
+      // 2) Rutas de administración: el token tiene que llevar admin:true.
+      if (url.pathname.startsWith("/api/admin/")) {
+        if (!payload.admin) throw new HttpError(403, "Se requiere acceso de administrador");
+        const handler = adminRoutes[routeKey];
+        if (!handler) throw new HttpError(404, "Ruta no encontrada");
+        return json(await handler(env.DB, request, url));
+      }
+
+      // 3) Rutas de una sede: el token tiene que ser exactamente el de esa sede.
+      const siteCode = normalizeSiteCode(url.searchParams.get("site") || url.searchParams.get("sede") || "");
+      if (!siteCode) throw new HttpError(400, "Falta indicar la sede");
+      if (payload.site !== siteCode) throw new HttpError(403, "El token no corresponde a esta sede");
+      const site = await findSiteByCode(env.DB, siteCode);
+      if (!site || !site.active) throw new HttpError(404, "Sede no encontrada");
+
+      const handler = routes[routeKey];
       if (!handler) throw new HttpError(404, "Ruta no encontrada");
       return json(await handler(env.DB, request, url, site));
     } catch (err) {

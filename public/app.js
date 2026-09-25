@@ -1,8 +1,19 @@
 // Estado en memoria + render. Todo va contra /api/*.
 
+import { getSiteSession, clearSiteSession } from "/session.js";
+
 const $ = (sel) => document.querySelector(sel);
-const DEFAULT_SITE = "ramirez";
-let currentSite = new URLSearchParams(window.location.search).get("site") || DEFAULT_SITE;
+
+// Sesión obligatoria: sin token válido para la sede pedida en la URL,
+// se vuelve a la página puente a iniciar sesión.
+const urlSite = new URLSearchParams(window.location.search).get("site");
+const session = getSiteSession();
+if (!session || (urlSite && urlSite !== session.site)) {
+  window.location.href = "/index.html";
+  throw new Error("Sin sesión válida, redirigiendo…"); // corta el resto del módulo
+}
+const currentSite = session.site;
+
 let state = null;
 let editing = false;
 let draftOrder = null; // array de ids mientras se edita
@@ -17,49 +28,35 @@ function escapeHtml(s) {
   );
 }
 
-function getCurrentSite() {
-  const search = new URLSearchParams(window.location.search);
-  const siteParam = search.get("site") || search.get("sede") || DEFAULT_SITE;
-  currentSite = siteParam;
-  return siteParam;
+function goToLogin() {
+  clearSiteSession();
+  window.location.href = "/index.html";
 }
 
 async function api(path, opts) {
-  const site = getCurrentSite();
   const separator = path.includes("?") ? "&" : "?";
-  const res = await fetch("/api" + path + separator + "site=" + encodeURIComponent(site), {
+  const res = await fetch("/api" + path + separator + "site=" + encodeURIComponent(currentSite), {
     method: opts?.method || "GET",
-    headers: opts?.body ? { "content-type": "application/json" } : undefined,
+    headers: {
+      Authorization: "Bearer " + session.token,
+      ...(opts?.body ? { "content-type": "application/json" } : {}),
+    },
     body: opts?.body ? JSON.stringify(opts.body) : undefined,
   });
+  if (res.status === 401 || res.status === 403) {
+    goToLogin();
+    throw new Error("Sesión no válida");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Error " + res.status);
   return data;
 }
 
-async function populateSiteSelector() {
-  const select = document.getElementById("site-select");
-  if (!select) return;
-  try {
-    const { sites } = await api("/sites");
-    select.innerHTML = "";
-    const options = sites || [];
-    for (const site of options) {
-      const option = document.createElement("option");
-      option.value = site.code;
-      option.textContent = site.name;
-      if (site.code === getCurrentSite()) option.selected = true;
-      select.appendChild(option);
-    }
-    select.value = getCurrentSite();
-    select.onchange = () => {
-      const url = new URL(window.location.href);
-      url.searchParams.set("site", select.value);
-      window.location.href = url.toString();
-    };
-  } catch (_) {
-    // fallback silencioso.
-  }
+function initHeader() {
+  const badge = $("#site-badge");
+  if (badge) badge.textContent = session.siteName || currentSite;
+  const logoutBtn = $("#logout-btn");
+  if (logoutBtn) logoutBtn.addEventListener("click", goToLogin);
 }
 
 function nombre(id) {
@@ -386,7 +383,6 @@ function renderIncidencias() {
 // ---------- acciones ----------
 
 async function load() {
-  await populateSiteSelector();
   state = await api("/state");
   render();
 }
@@ -633,6 +629,7 @@ async function refreshState() {
 // refresco inmediato al volver a la pestaña
 document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshState(); });
 
+initHeader();
 load()
   .then(() => { loadRanking("week"); setInterval(refreshState, 3000); })
   .catch((e) => toast(e.message));

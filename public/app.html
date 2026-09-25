@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Rotación de técnicos</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="bg" class="bg-rays" aria-hidden="true"></div>
+    <main class="wrap">
+      <header class="topbar">
+        <div class="topbar-left">
+          <h1 id="titulo">Rotación de técnicos</h1>
+          <span id="site-badge" class="site-badge"></span>
+          <button id="logout-btn" type="button" class="link-btn">Cambiar de sede</button>
+        </div>
+        <div id="fecha" class="fecha">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="18" rx="2" />
+            <path d="M16 2v4M8 2v4M3 10h18" />
+          </svg>
+          <span id="fecha-txt"></span>
+        </div>
+      </header>
+
+      <div id="aviso" class="aviso" hidden></div>
+
+      <!-- Hero: siguiente incidencia + acciones -->
+      <section class="card hero">
+        <div class="hero-next">
+          <div id="next-avatar" class="avatar">—</div>
+          <div class="hero-text">
+            <span class="label">Siguiente incidencia para</span>
+            <strong id="next-nombre" class="next-nombre">—</strong>
+            <span id="hero-last" class="hero-last" hidden></span>
+          </div>
+        </div>
+        <div class="acciones">
+          <button id="btn-incidencia" class="specular-button specular-button--lg sb-primary">Mi turno</button>
+          <button id="btn-nuevodia" class="specular-button specular-button--lg sb-secondary">▶ Nuevo día</button>
+          <button id="btn-undo" class="btn btn-ghost btn-xs">↩ Deshacer</button>
+        </div>
+        <input id="nota-inc" class="nota-input" type="text" placeholder="Nota / nº de ticket (opcional)" maxlength="120" autocomplete="off" />
+      </section>
+
+      <div class="grid">
+        <!-- Orden de hoy -->
+        <section class="card">
+          <div class="card-head">
+            <h2>Orden de la jornada</h2>
+            <div class="card-actions">
+              <button id="btn-regenerar" class="btn btn-sm">Regenerar</button>
+              <button id="btn-editar" class="btn btn-sm">Editar</button>
+            </div>
+          </div>
+          <ol id="orden" class="orden"></ol>
+          <p id="orden-nota" class="nota"></p>
+        </section>
+
+        <!-- Técnicos -->
+        <section class="card">
+          <div class="card-head"><h2>Técnicos</h2></div>
+          <p class="nota">Desactiva, renombra, elimina o añade técnicos.</p>
+          <ul id="tecnicos" class="tecnicos"></ul>
+          <div class="tec-add">
+            <input id="tec-nuevo" type="text" placeholder="Nombre del nuevo técnico" maxlength="40" autocomplete="off" />
+            <button id="btn-add-tec" class="btn btn-sm">Añadir</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Incidencias de hoy -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Incidencias de la jornada</h2>
+          <span id="contador" class="badge">0</span>
+        </div>
+        <ol id="incidencias" class="incidencias"></ol>
+      </section>
+
+      <!-- Historial -->
+      <section class="card">
+        <details>
+          <summary>Historial de jornadas</summary>
+          <div id="historial" class="historial"></div>
+        </details>
+      </section>
+
+      <!-- Ranking acumulado -->
+      <section class="card">
+        <div class="card-head">
+          <h2>Ranking acumulado</h2>
+          <div class="rank-tabs">
+            <button class="rank-tab is-active" data-range="week">Semana</button>
+            <button class="rank-tab" data-range="month">Mes</button>
+            <button class="rank-tab" data-range="all">Todo</button>
+          </div>
+        </div>
+        <div id="ranking"></div>
+      </section>
+
+      <footer class="site-footer">
+        Hecho con ❤️ por <a href="https://lucasvicente.es" target="_blank" rel="noopener">Lucas Vicente</a> | Idea original: Juan Carlos Álvarez y Sergio Madero | Mantenimiento y multisede: Juan Carlos Álvarez
+      </footer>
+    </main>
+
+    <!-- Modal de confirmación propio (sin diálogos del navegador) -->
+    <div id="modal" class="modal-overlay" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true">
+        <h3 id="modal-title" class="modal-title">¿Seguro?</h3>
+        <p id="modal-msg" class="modal-msg"></p>
+        <div class="modal-actions">
+          <button id="modal-cancel" class="btn btn-ghost">Cancelar</button>
+          <button id="modal-ok" class="btn btn-primary">Confirmar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <script type="module" src="/app.js"></script>
+    <script type="module" src="/effects.js"></script>
+  </body>
+</html>
