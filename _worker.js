@@ -718,6 +718,11 @@ export default {
 
     try {
       if (!env.DB) throw new HttpError(500, "Base de datos D1 no vinculada (DB)");
+
+      const routeKeyEarly = `${request.method} ${url.pathname}`;
+      // Esta ruta es pública y no necesita TOKEN_SECRET: solo lee D1.
+      if (routeKeyEarly === "GET /api/sites") return json(await listPublicSites(env.DB));
+
       if (!env.TOKEN_SECRET) throw new HttpError(500, "Falta configurar el secreto TOKEN_SECRET");
 
       // Solo se aceptan escrituras desde esta misma web (no desde otros sitios).
@@ -726,10 +731,10 @@ export default {
         throw new HttpError(403, "Origen no permitido");
       }
 
-      const routeKey = `${request.method} ${url.pathname}`;
+      const routeKey = routeKeyEarly;
 
-      // 1) Rutas públicas: login de sede, login de admin, y la lista de sedes.
-      if (routeKey === "GET /api/sites") return json(await listPublicSites(env.DB));
+      // 1) Rutas públicas: login de sede y login de admin (necesitan TOKEN_SECRET
+      //    para firmar el token, por eso van después de la comprobación de arriba).
       if (routeKey === "POST /api/auth/login") return json(await siteLogin(env, request));
       if (routeKey === "POST /api/auth/admin-login") return json(await adminLogin(env, request));
 
