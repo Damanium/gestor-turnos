@@ -41,6 +41,18 @@ async function ensureColumn(db, tableName, columnName, typeDef, defaultValue = "
   }
 }
 
+async function migrateLegacySiteData(db) {
+  const defaultSite = await getSiteByCode(db, DEFAULT_SITE_CODE);
+  if (!defaultSite) return;
+
+  for (const tableName of ["technicians", "jornadas", "assignments"]) {
+    await db
+      .prepare(`UPDATE ${tableName} SET site_id = ? WHERE site_id IS NULL`)
+      .bind(defaultSite.id)
+      .run();
+  }
+}
+
 async function ensureSchema(db) {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS sites (
@@ -96,6 +108,8 @@ async function ensureSchema(db) {
         .run();
     }
   }
+
+  await migrateLegacySiteData(db);
 }
 
 async function getSiteByCode(db, code) {
