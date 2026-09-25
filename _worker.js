@@ -32,85 +32,11 @@ function normalizeSiteCode(value) {
   return DEFAULT_SITE_CODE;
 }
 
-async function ensureColumn(db, tableName, columnName, typeDef, defaultValue = "") {
-  const info = await db.prepare(`PRAGMA table_info(${tableName})`).all();
-  const hasColumn = (info.results || []).some((col) => col.name === columnName);
-  if (!hasColumn) {
-    const defaultClause = defaultValue ? ` DEFAULT ${defaultValue}` : "";
-    await db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${typeDef}${defaultClause}`);
-  }
-}
-
-async function migrateLegacySiteData(db) {
-  const defaultSite = await getSiteByCode(db, DEFAULT_SITE_CODE);
-  if (!defaultSite) return;
-
-  for (const tableName of ["technicians", "jornadas", "assignments"]) {
-    await db
-      .prepare(`UPDATE ${tableName} SET site_id = ? WHERE site_id IS NULL`)
-      .bind(defaultSite.id)
-      .run();
-  }
-}
-
-async function ensureSchema(db) {
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS sites (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      code TEXT NOT NULL UNIQUE,
-      name TEXT NOT NULL,
-      active INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS technicians (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      base_pos INTEGER NOT NULL DEFAULT 0,
-      active INTEGER NOT NULL DEFAULT 1,
-      site_id INTEGER,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS jornadas (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      started_at TEXT NOT NULL,
-      order_json TEXT NOT NULL,
-      manual INTEGER NOT NULL DEFAULT 0,
-      valid INTEGER NOT NULL DEFAULT 0,
-      site_id INTEGER,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS assignments (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      jornada_id INTEGER NOT NULL,
-      seq INTEGER NOT NULL,
-      technician_id INTEGER NOT NULL,
-      note TEXT,
-      created_at TEXT NOT NULL,
-      site_id INTEGER
-    );
-  `);
-
-  await ensureColumn(db, "technicians", "site_id", "INTEGER", "");
-  await ensureColumn(db, "jornadas", "site_id", "INTEGER", "");
-  await ensureColumn(db, "assignments", "site_id", "INTEGER", "");
-
-  const { results } = await db.prepare("SELECT code FROM sites ORDER BY id ASC").all();
-  const existing = new Set((results || []).map((row) => row.code));
-  const now = new Date().toISOString();
-  for (const [code, name] of Object.entries(SITE_DEFS)) {
-    if (!existing.has(code)) {
-      await db
-        .prepare("INSERT INTO sites (code, name, active, created_at) VALUES (?, ?, 1, ?)")
-        .bind(code, name, now)
-        .run();
-    }
-  }
-
-  await migrateLegacySiteData(db);
-}
+// NOTA: el esquema (tablas sites/technicians/jornadas/assignments con site_id)
+// ya está migrado en D1 a mano con reset-multisede.sql, así que aquí no se
+// vuelve a crear. IMPORTANTE: nunca se usa db.exec() con SQL en varias líneas
+// -- D1 lo rechaza con "D1_EXEC_ERROR: incomplete input" -- por eso todo lo
+// de aquí en adelante usa sentencias preparadas (prepare/bind), una por línea.
 
 async function getSiteByCode(db, code) {
   const normalized = normalizeSiteCode(code);
@@ -567,7 +493,6 @@ export default {
 
     try {
       if (!env.DB) throw new HttpError(500, "Base de datos D1 no vinculada (DB)");
-      await ensureSchema(env.DB);
 
       const siteCode = normalizeSiteCode(url.searchParams.get("site") || url.searchParams.get("sede") || DEFAULT_SITE_CODE);
       const site = await getSiteByCode(env.DB, siteCode);
@@ -588,5 +513,3 @@ export default {
     }
   },
 };
-
-"use strict";
