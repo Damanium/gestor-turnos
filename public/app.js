@@ -1,6 +1,8 @@
 // Estado en memoria + render. Todo va contra /api/*.
 
 const $ = (sel) => document.querySelector(sel);
+const DEFAULT_SITE = "ramirez";
+let currentSite = new URLSearchParams(window.location.search).get("site") || DEFAULT_SITE;
 let state = null;
 let editing = false;
 let draftOrder = null; // array de ids mientras se edita
@@ -10,13 +12,22 @@ let currentRange = "week"; // rango activo del ranking
 let editingNoteId = null; // incidencia cuya nota se está editando en línea
 
 function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, (c) =>
+  return String(s).replace(/[&<>\"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
   );
 }
 
+function getCurrentSite() {
+  const search = new URLSearchParams(window.location.search);
+  const siteParam = search.get("site") || search.get("sede") || DEFAULT_SITE;
+  currentSite = siteParam;
+  return siteParam;
+}
+
 async function api(path, opts) {
-  const res = await fetch("/api" + path, {
+  const site = getCurrentSite();
+  const separator = path.includes("?") ? "&" : "?";
+  const res = await fetch("/api" + path + separator + "site=" + encodeURIComponent(site), {
     method: opts?.method || "GET",
     headers: opts?.body ? { "content-type": "application/json" } : undefined,
     body: opts?.body ? JSON.stringify(opts.body) : undefined,
@@ -24,6 +35,31 @@ async function api(path, opts) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || "Error " + res.status);
   return data;
+}
+
+async function populateSiteSelector() {
+  const select = document.getElementById("site-select");
+  if (!select) return;
+  try {
+    const { sites } = await api("/sites");
+    select.innerHTML = "";
+    const options = sites || [];
+    for (const site of options) {
+      const option = document.createElement("option");
+      option.value = site.code;
+      option.textContent = site.name;
+      if (site.code === getCurrentSite()) option.selected = true;
+      select.appendChild(option);
+    }
+    select.value = getCurrentSite();
+    select.onchange = () => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("site", select.value);
+      window.location.href = url.toString();
+    };
+  } catch (_) {
+    // fallback silencioso.
+  }
 }
 
 function nombre(id) {
@@ -105,13 +141,11 @@ function toast(msg) {
 function render() {
   if (!state) return;
 
-  // fecha de la jornada
   const d = new Date(state.jornada.started_at);
   $("#fecha-txt").textContent = d.toLocaleDateString("es-ES", {
     weekday: "long", day: "numeric", month: "long",
   });
 
-  // siguiente
   const av = $("#next-avatar");
   if (state.next) {
     av.textContent = initials(nombre(state.next.technician_id));
@@ -124,7 +158,6 @@ function render() {
   $("#btn-incidencia").disabled = !state.next;
   $("#btn-undo").disabled = state.assignments.length === 0;
 
-  // última asignada (quién la está atendiendo ahora)
   const last = state.assignments[state.assignments.length - 1];
   const hl = $("#hero-last");
   if (last) {
@@ -137,7 +170,7 @@ function render() {
     hl.hidden = false;
     if (last.id !== lastShownId) {
       hl.classList.remove("pulse");
-      void hl.offsetWidth; // reinicia la animación
+      void hl.offsetWidth;
       hl.classList.add("pulse");
     }
   } else {
@@ -145,7 +178,6 @@ function render() {
   }
   lastShownId = last ? last.id : null;
 
-  // aviso de validez
   const aviso = $("#aviso");
   if (!state.valid) {
     aviso.hidden = false;
@@ -208,7 +240,6 @@ function renderOrden() {
     ol.appendChild(li);
   });
 
-  // botones
   $("#btn-regenerar").hidden = editing;
   $("#btn-regenerar").disabled = state.locked;
   $("#btn-editar").textContent = editing ? "Guardar orden" : "Editar";
@@ -254,7 +285,6 @@ function renderTecnicos() {
     left.appendChild(dot(t.id));
 
     if (t.id === renamingId) {
-      // edición en línea del nombre
       const input = document.createElement("input");
       input.className = "tec-input";
       input.value = t.name;
@@ -356,6 +386,7 @@ function renderIncidencias() {
 // ---------- acciones ----------
 
 async function load() {
+  await populateSiteSelector();
   state = await api("/state");
   render();
 }
@@ -380,7 +411,7 @@ async function deshacer() {
 }
 
 async function commitNote(id, value) {
-  if (editingNoteId !== id) return; // ya procesado (evita doble Enter+blur)
+  if (editingNoteId !== id) return;
   editingNoteId = null;
   const note = value.trim();
   const current = (state.assignments.find((a) => a.id === id)?.note) || "";
@@ -419,7 +450,7 @@ async function toggleTecnico(id, active) {
 }
 
 async function commitRename(id, value) {
-  if (renamingId !== id) return; // ya procesado (evita doble Enter+blur)
+  if (renamingId !== id) return;
   renamingId = null;
   const name = value.trim();
   const actual = state.technicians.find((t) => t.id === id)?.name;
@@ -585,16 +616,16 @@ document.querySelector("details").addEventListener("toggle", (e) => {
 
 // ---------- actualización en tiempo real (polling cada 3s) ----------
 async function refreshState() {
-  if (editing || renamingId !== null || editingNoteId !== null) return; // no molestar mientras se edita
-  if (!$("#modal").hidden) return;                    // modal de confirmación abierto
-  if (document.activeElement === $("#tec-nuevo") && $("#tec-nuevo").value) return; // escribiendo
-  if (document.hidden) return;                        // pestaña en segundo plano
+  if (editing || renamingId !== null || editingNoteId !== null) return;
+  if (!$("#modal").hidden) return;
+  if (document.activeElement === $("#tec-nuevo") && $("#tec-nuevo").value) return;
+  if (document.hidden) return;
   try {
     const fresh = await api("/state");
     if (JSON.stringify(fresh) !== JSON.stringify(state)) {
       state = fresh;
       render();
-      loadRanking(currentRange); // mantener el ranking al día
+      loadRanking(currentRange);
     }
   } catch (_) { /* silencioso: reintenta en el siguiente ciclo */ }
 }
@@ -605,3 +636,4 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) refr
 load()
   .then(() => { loadRanking("week"); setInterval(refreshState, 3000); })
   .catch((e) => toast(e.message));
+
