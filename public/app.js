@@ -340,14 +340,19 @@ function renderIncidencias() {
 
     const quien = document.createElement("span");
     quien.className = "quien";
+    quien.textContent = nombre(a.technician_id);
+
+    const ticketSpan = document.createElement("span");
+    ticketSpan.className = "inc-ticket";
+    ticketSpan.textContent = a.ticket ? "#" + a.ticket : "(sin nº)";
+    quien.append(" ", ticketSpan);
 
     if (a.id === editingNoteId) {
-      quien.appendChild(document.createTextNode(nombre(a.technician_id) + " "));
       const input = document.createElement("input");
       input.className = "inc-note-input";
       input.value = a.note || "";
-      input.maxLength = 120;
-      input.placeholder = "Nota / nº de ticket…";
+      input.maxLength = 300;
+      input.placeholder = "Comentario…";
       input.onkeydown = (e) => {
         if (e.key === "Enter") { e.preventDefault(); commitNote(a.id, input.value); }
         if (e.key === "Escape") { editingNoteId = null; render(); }
@@ -357,7 +362,6 @@ function renderIncidencias() {
       setTimeout(() => { input.focus(); input.select(); }, 0);
       li.appendChild(quien);
     } else {
-      quien.textContent = nombre(a.technician_id);
       if (a.note) {
         const noteSpan = document.createElement("span");
         noteSpan.className = "inc-note";
@@ -366,7 +370,7 @@ function renderIncidencias() {
       }
       li.appendChild(quien);
       li.appendChild(
-        iconBtn("edit", a.note ? "Editar nota" : "Añadir nota",
+        iconBtn("edit", a.note ? "Editar comentario" : "Añadir comentario",
           () => { editingNoteId = a.id; render(); }, "icon-btn-sm")
       );
     }
@@ -389,12 +393,17 @@ async function load() {
 
 async function nuevaIncidencia() {
   if (editing) return;
-  const notaEl = $("#nota-inc");
-  const note = notaEl.value.trim();
+  const ticketEl = $("#ticket-inc");
+  const ticket = ticketEl.value.trim();
+  if (!ticket) {
+    toast("Escribe el nº de ticket / despliegue / retirada");
+    ticketEl.focus();
+    return;
+  }
   try {
     const who = state.next ? nombre(state.next.technician_id) : null;
-    state = await api("/incidents", { method: "POST", body: { note } });
-    notaEl.value = "";
+    state = await api("/incidents", { method: "POST", body: { ticket } });
+    ticketEl.value = "";
     render();
     loadRanking(currentRange);
     if (who) toast("Asignada a " + who);
@@ -476,11 +485,11 @@ async function addTecnico() {
 
 async function nuevoDia() {
   const ok = await confirmModal(
-    "Empieza una jornada nueva. La rotación continúa donde quedó: arranca por quien está de «Siguiente».",
-    { title: "¿Empezar un nuevo día?", ok: "Empezar nuevo día" }
+    "Empieza un turno nuevo. La rotación continúa donde quedó: arranca por quien está de «Siguiente».",
+    { title: "¿Empezar un nuevo turno?", ok: "Empezar nuevo turno" }
   );
   if (!ok) return;
-  try { state = await api("/jornada/advance", { method: "POST" }); editing = false; render(); toast("Nuevo día — orden rotado"); }
+  try { state = await api("/jornada/advance", { method: "POST" }); editing = false; render(); toast("Nuevo turno — orden rotado"); }
   catch (e) { toast(e.message); }
 }
 
@@ -531,11 +540,14 @@ async function verHistorial() {
       const f = new Date(h.started_at).toLocaleDateString("es-ES", {
         day: "2-digit", month: "2-digit", year: "2-digit",
       });
+      const hora = new Date(h.started_at).toLocaleTimeString("es-ES", {
+        hour: "2-digit", minute: "2-digit", timeZone: "Europe/Madrid",
+      });
       const tr = document.createElement("tr");
       tr.className = "hist-row";
       tr.innerHTML =
         `<td class="hist-caret">▸</td>` +
-        `<td>${f}</td>` +
+        `<td>${f} <span class="hist-hora">${hora}</span></td>` +
         `<td class="hist-orden">${h.order.join(" → ")}</td>` +
         `<td>${h.incidencias}</td>`;
       const detail = document.createElement("tr");
@@ -595,16 +607,42 @@ async function toggleHistDetail(h, tr, detail) {
   } catch (e) { body.textContent = e.message; }
 }
 
+async function buscarIncidencia(e) {
+  e.preventDefault();
+  const input = $("#buscar-input");
+  const q = input.value.trim();
+  const cont = $("#buscar-resultados");
+  if (!q) { cont.innerHTML = ""; return; }
+  cont.textContent = "Buscando…";
+  try {
+    const { results } = await api("/incidents/search?q=" + encodeURIComponent(q));
+    if (!results.length) { cont.innerHTML = `<p class="nota">Sin resultados para «${escapeHtml(q)}».</p>`; return; }
+    cont.innerHTML = results.map((r) => {
+      const fecha = new Date(r.created_at).toLocaleString("es-ES", {
+        day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit",
+        timeZone: "Europe/Madrid",
+      });
+      return `<div class="buscar-item">` +
+        `<span class="inc-ticket">#${escapeHtml(r.ticket || "(sin nº)")}</span>` +
+        `<span class="buscar-quien">${escapeHtml(r.technician_name)}</span>` +
+        `<span class="buscar-fecha">${fecha}</span>` +
+        (r.note ? `<span class="inc-note">— ${escapeHtml(r.note)}</span>` : "") +
+        `</div>`;
+    }).join("");
+  } catch (err) { cont.textContent = err.message; }
+}
+
 // ---------- eventos ----------
 
 $("#btn-incidencia").onclick = nuevaIncidencia;
+$("#buscar-form").addEventListener("submit", buscarIncidencia);
 $("#btn-undo").onclick = deshacer;
 $("#btn-regenerar").onclick = regenerar;
 $("#btn-editar").onclick = toggleEdicion;
 $("#btn-nuevodia").onclick = nuevoDia;
 $("#btn-add-tec").onclick = addTecnico;
 $("#tec-nuevo").addEventListener("keydown", (e) => { if (e.key === "Enter") addTecnico(); });
-$("#nota-inc").addEventListener("keydown", (e) => { if (e.key === "Enter") nuevaIncidencia(); });
+$("#ticket-inc").addEventListener("keydown", (e) => { if (e.key === "Enter") nuevaIncidencia(); });
 document.querySelectorAll(".rank-tab").forEach((b) => { b.onclick = () => loadRanking(b.dataset.range); });
 document.querySelector("details").addEventListener("toggle", (e) => {
   if (e.target.open) verHistorial();

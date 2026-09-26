@@ -30,13 +30,20 @@
 
       <section id="admin-panel" class="admin-panel" hidden aria-labelledby="admin-titulo">
         <header class="admin-panel-header">
-          <h1>Sedes</h1>
+          <h1>Panel de administración</h1>
           <button id="admin-logout" class="btn btn-ghost" type="button">Cerrar sesión</button>
         </header>
 
         <p id="admin-panel-error" class="auth-error" role="status" aria-live="polite" hidden></p>
         <p id="admin-panel-ok" class="admin-ok" role="status" aria-live="polite" hidden></p>
 
+        <div class="admin-subtitulo-row">
+          <h2 class="admin-subtitulo">Vista general</h2>
+          <button id="btn-refrescar-overview" class="btn btn-ghost btn-xs" type="button">↻ Actualizar</button>
+        </div>
+        <div id="overview-wrap" class="overview-wrap"></div>
+
+        <h2 class="admin-subtitulo">Sedes</h2>
         <div id="sites-list" class="sites-list"></div>
 
         <h2 class="admin-subtitulo">Nueva sede</h2>
@@ -54,6 +61,18 @@
       </section>
     </main>
 
+    <!-- Modal de confirmación para acciones destructivas (borrar sede) -->
+    <div id="admin-modal" class="modal-overlay" hidden>
+      <div class="modal-card" role="dialog" aria-modal="true">
+        <h3 id="admin-modal-title" class="modal-title">¿Seguro?</h3>
+        <p id="admin-modal-msg" class="modal-msg"></p>
+        <div class="modal-actions">
+          <button id="admin-modal-cancel" class="btn btn-ghost">Cancelar</button>
+          <button id="admin-modal-ok" class="btn btn-primary">Confirmar</button>
+        </div>
+      </div>
+    </div>
+
     <template id="site-row-template">
       <article class="site-row">
         <div class="site-row-main">
@@ -63,6 +82,7 @@
         </div>
         <div class="site-row-actions">
           <button type="button" class="btn btn-ghost btn-toggle">Desactivar</button>
+          <button type="button" class="btn btn-ghost btn-danger btn-delete">Eliminar</button>
           <form class="site-row-password-form">
             <input type="password" class="site-row-password" placeholder="Nueva contraseña" minlength="6" />
             <button type="submit" class="btn btn-secondary">Guardar contraseña</button>

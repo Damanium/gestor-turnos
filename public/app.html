@@ -40,10 +40,24 @@
         </div>
         <div class="acciones">
           <button id="btn-incidencia" class="specular-button specular-button--lg sb-primary">Mi turno</button>
-          <button id="btn-nuevodia" class="specular-button specular-button--lg sb-secondary">▶ Nuevo día</button>
+          <button id="btn-nuevodia" class="specular-button specular-button--lg sb-secondary">▶ Nuevo turno</button>
           <button id="btn-undo" class="btn btn-ghost btn-xs">↩ Deshacer</button>
         </div>
-        <input id="nota-inc" class="nota-input" type="text" placeholder="Nota / nº de ticket (opcional)" maxlength="120" autocomplete="off" />
+        <label class="ticket-field" for="ticket-inc">
+          <span>Nº de ticket / Despliegue / Retirada <em>(obligatorio)</em></span>
+          <input id="ticket-inc" class="nota-input" type="text" placeholder="Ej. INC-2026-00123" maxlength="60" autocomplete="off" required />
+        </label>
+      </section>
+
+      <!-- Buscar incidencia -->
+      <section class="card">
+        <div class="card-head"><h2>Buscar incidencia</h2></div>
+        <p class="nota">Busca por nº de ticket, despliegue o retirada (también en jornadas anteriores).</p>
+        <form id="buscar-form" class="buscar-form">
+          <input id="buscar-input" type="text" placeholder="Nº de ticket / Despliegue / Retirada" maxlength="60" autocomplete="off" />
+          <button type="submit" class="btn btn-sm">Buscar</button>
+        </form>
+        <div id="buscar-resultados" class="buscar-resultados"></div>
       </section>
 
       <div class="grid">

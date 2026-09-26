@@ -1,5 +1,31 @@
 import { getAdminSession, setAdminSession, clearAdminSession } from "/session.js";
 
+function confirmModal(msg, { title = "¿Seguro?", ok = "Confirmar" } = {}) {
+  return new Promise((resolve) => {
+    const overlay = document.getElementById("admin-modal");
+    document.getElementById("admin-modal-title").textContent = title;
+    document.getElementById("admin-modal-msg").textContent = msg;
+    document.getElementById("admin-modal-ok").textContent = ok;
+    overlay.hidden = false;
+    const done = (val) => {
+      overlay.hidden = true;
+      document.getElementById("admin-modal-ok").onclick = null;
+      document.getElementById("admin-modal-cancel").onclick = null;
+      overlay.onclick = null;
+      document.removeEventListener("keydown", onKey);
+      resolve(val);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") done(false);
+      if (e.key === "Enter") done(true);
+    };
+    document.getElementById("admin-modal-ok").onclick = () => done(true);
+    document.getElementById("admin-modal-cancel").onclick = () => done(false);
+    overlay.onclick = (e) => { if (e.target === overlay) done(false); };
+    document.addEventListener("keydown", onKey);
+  });
+}
+
 const loginCard = document.getElementById("admin-login-card");
 const panel = document.getElementById("admin-panel");
 const loginForm = document.getElementById("admin-login-form");
@@ -66,7 +92,45 @@ function showPanel() {
   loginCard.hidden = true;
   panel.hidden = false;
   loadSites();
+  loadOverview();
 }
+
+const overviewWrap = document.getElementById("overview-wrap");
+
+function renderOverview(overview) {
+  if (!overview.length) {
+    overviewWrap.innerHTML = `<p class="nota">Todavía no hay sedes.</p>`;
+    return;
+  }
+  const rows = overview.map((o) => {
+    const ultima = o.ultima_incidencia
+      ? new Date(o.ultima_incidencia).toLocaleString("es-ES", {
+          day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", timeZone: "Europe/Madrid",
+        })
+      : "—";
+    return `<tr>` +
+      `<td>${o.name}${!o.active ? ' <span class="badge-off" style="font-size:10.5px;padding:1px 6px;border-radius:999px">Desactivada</span>' : ""}</td>` +
+      `<td>${o.technicians_active}</td>` +
+      `<td>${o.incidencias_turno_actual}</td>` +
+      `<td>${o.siguiente ? o.siguiente : "—"}${o.orden_valido === false ? ' <span class="badge-warn" style="font-size:10.5px;padding:1px 6px;border-radius:999px">revisar orden</span>' : ""}</td>` +
+      `<td>${ultima}</td>` +
+      `</tr>`;
+  }).join("");
+  overviewWrap.innerHTML =
+    `<table><thead><tr><th>Sede</th><th>Técnicos</th><th>Inc. turno actual</th><th>Siguiente</th><th>Última incidencia</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table>`;
+}
+
+async function loadOverview() {
+  overviewWrap.innerHTML = `<p class="nota">Cargando…</p>`;
+  try {
+    const { overview } = await adminApi("/admin/overview");
+    renderOverview(overview || []);
+  } catch (err) {
+    if (err.message) overviewWrap.innerHTML = `<p class="nota">${err.message}</p>`;
+  }
+}
+document.getElementById("btn-refrescar-overview").addEventListener("click", loadOverview);
 
 function renderSites(sites) {
   sitesList.innerHTML = "";
@@ -95,9 +159,30 @@ function renderSites(sites) {
         await adminApi("/admin/sites/toggle", { method: "POST", body: { site: site.code, active: !site.active } });
         showPanelOk(site.active ? `${site.name} desactivada.` : `${site.name} activada.`);
         loadSites();
+        loadOverview();
       } catch (err) {
         showPanelError(err.message);
         toggleBtn.disabled = false;
+      }
+    });
+
+    const deleteBtn = node.querySelector(".btn-delete");
+    deleteBtn.addEventListener("click", async () => {
+      const ok = await confirmModal(
+        `Se eliminará "${site.name}" de forma permanente. Solo es posible si la sede no tiene ningún técnico (ni historial). Si ya la has usado, desactívala en su lugar.`,
+        { title: "¿Eliminar sede?", ok: "Eliminar" }
+      );
+      if (!ok) return;
+      deleteBtn.disabled = true;
+      try {
+        await adminApi("/admin/sites/delete", { method: "POST", body: { site: site.code } });
+        showPanelOk(`Sede "${site.name}" eliminada.`);
+        loadSites();
+        loadOverview();
+      } catch (err) {
+        showPanelError(err.message);
+      } finally {
+        deleteBtn.disabled = false;
       }
     });
 
@@ -177,6 +262,7 @@ newSiteForm.addEventListener("submit", async (e) => {
     newSiteForm.reset();
     showPanelOk(`Sede "${name}" creada. Ahora ponle una contraseña.`);
     loadSites();
+    loadOverview();
   } catch (err) {
     showPanelError(err.message);
   } finally {
