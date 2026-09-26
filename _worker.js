@@ -286,6 +286,61 @@ const adminRoutes = {
       .run();
     return { ok: true };
   },
+
+  /** Solo permite borrar sedes que nunca han tenido técnicos, para no perder
+   *  historial de verdad: una sede ya usada se desactiva, no se elimina. */
+  "POST /api/admin/sites/delete": async (db, req) => {
+    const body = await readBody(req);
+    const code = normalizeSiteCode(body.site);
+    const site = await findSiteByCode(db, code);
+    if (!site) throw new HttpError(404, "Sede no encontrada");
+    const techCount = await db.prepare("SELECT COUNT(*) AS n FROM technicians WHERE site_id = ?").bind(site.id).first();
+    if (techCount.n > 0) {
+      throw new HttpError(
+        409,
+        "Esta sede tiene técnicos y/o historial: desactívala en vez de eliminarla, para no perder los datos."
+      );
+    }
+    await db.prepare("DELETE FROM sites WHERE id = ?").bind(site.id).run();
+    return { ok: true };
+  },
+
+  /** Resumen de todas las sedes a la vez, para el panel de administración. */
+  "GET /api/admin/overview": async (db) => {
+    const { results: sites } = await db.prepare("SELECT id, code, name, active FROM sites ORDER BY name ASC").all();
+    const overview = [];
+    for (const s of sites || []) {
+      const [techCount, current, lastIncident] = await Promise.all([
+        db.prepare("SELECT COUNT(*) AS n FROM technicians WHERE site_id = ? AND active = 1").bind(s.id).first(),
+        db.prepare("SELECT * FROM jornadas WHERE site_id = ? ORDER BY id DESC LIMIT 1").bind(s.id).first(),
+        db.prepare("SELECT created_at FROM assignments WHERE site_id = ? ORDER BY created_at DESC LIMIT 1").bind(s.id).first(),
+      ]);
+      let siguiente = null;
+      let incidenciasTurno = 0;
+      let ordenValido = null;
+      if (current) {
+        const [techs, assignments] = await Promise.all([getTechs(db, s.id), getAssignments(db, current.id, s.id)]);
+        incidenciasTurno = assignments.length;
+        const activeIds = new Set(techs.filter((t) => t.active).map((t) => t.id));
+        const order = parseOrder(current.order_json);
+        const nextId = nextFor(order, assignments, activeIds);
+        const techMap = new Map(techs.map((t) => [t.id, t.name]));
+        siguiente = nextId !== null ? techMap.get(nextId) || null : null;
+        ordenValido = isValid(order, activeIds, await lastAttendedBefore(db, current.id, s.id));
+      }
+      overview.push({
+        code: s.code,
+        name: s.name,
+        active: !!s.active,
+        technicians_active: techCount.n,
+        incidencias_turno_actual: incidenciasTurno,
+        siguiente,
+        orden_valido: ordenValido,
+        ultima_incidencia: lastIncident ? lastIncident.created_at : null,
+      });
+    }
+    return { overview };
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -350,11 +405,11 @@ async function getTechs(db, siteId) {
 async function getAssignments(db, jornadaId, siteId) {
   const { results } = await db
     .prepare(
-      "SELECT id, seq, technician_id, note, created_at FROM assignments WHERE jornada_id = ? AND site_id = ? ORDER BY seq ASC"
+      "SELECT id, seq, technician_id, ticket, note, created_at FROM assignments WHERE jornada_id = ? AND site_id = ? ORDER BY seq ASC"
     )
     .bind(jornadaId, siteId)
     .all();
-  return results.map((a) => ({ ...a, note: a.note || "" }));
+  return results.map((a) => ({ ...a, ticket: a.ticket || "", note: a.note || "" }));
 }
 
 /** Técnico que atendió la última incidencia registrada en jornadas anteriores a jornadaId. */
@@ -464,6 +519,11 @@ function toId(value, label = "id") {
   return value;
 }
 
+/** Escapa % y _ para que una búsqueda LIKE no los trate como comodines. */
+function escapeLike(text) {
+  return text.replace(/[\\%_]/g, (c) => "\\" + c);
+}
+
 function toText(value, { max, required = false, label }) {
   const text = typeof value === "string" ? value.trim() : "";
   if (required && !text) throw new HttpError(400, `${label} no puede estar vacío`);
@@ -484,15 +544,17 @@ async function readBody(request) {
 // Acciones
 // ---------------------------------------------------------------------------
 
-async function addIncident(db, note, siteId) {
+/** El número de ticket se fija al crear la incidencia y ya no se puede tocar
+ *  (solo el comentario, vía /api/incidents/note, es editable después). */
+async function addIncident(db, ticket, note, siteId) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const st = await loadState(db, siteId);
     if (!st.next) throw new HttpError(409, "No hay técnicos disponibles para asignar la incidencia.");
     const lastSeq = st.assignments.length ? st.assignments[st.assignments.length - 1].seq : 0;
     const res = await db
       .prepare(
-        `INSERT INTO assignments (site_id, jornada_id, seq, technician_id, note, created_at)
-          SELECT ?, ?, ?, ?, ?, ?
+        `INSERT INTO assignments (site_id, jornada_id, seq, technician_id, ticket, note, created_at)
+          SELECT ?, ?, ?, ?, ?, ?, ?
           WHERE (SELECT COALESCE(MAX(seq), 0) FROM assignments WHERE jornada_id = ? AND site_id = ?) = ?`
       )
       .bind(
@@ -500,6 +562,7 @@ async function addIncident(db, note, siteId) {
         st.jornada.id,
         lastSeq + 1,
         st.next.technician_id,
+        ticket,
         note,
         new Date().toISOString(),
         st.jornada.id,
@@ -548,7 +611,9 @@ const routes = {
 
   "POST /api/incidents": async (db, req, url, site) => {
     const body = await readBody(req);
-    return addIncident(db, toText(body.note, { max: 120, label: "La nota" }), site.id);
+    const ticket = toText(body.ticket, { max: 60, required: true, label: "El nº de ticket / Despliegue / Retirada" });
+    const note = toText(body.note, { max: 300, label: "El comentario" });
+    return addIncident(db, ticket, note, site.id);
   },
 
   "POST /api/incidents/undo": (db, req, url, site) => undoIncident(db, site.id),
@@ -556,7 +621,7 @@ const routes = {
   "POST /api/incidents/note": async (db, req, url, site) => {
     const body = await readBody(req);
     const id = toId(body.id);
-    const note = toText(body.note, { max: 120, label: "La nota" });
+    const note = toText(body.note, { max: 300, label: "El comentario" });
     const j = await ensureJornada(db, site.id);
     const res = await db
       .prepare("UPDATE assignments SET note = ? WHERE id = ? AND jornada_id = ? AND site_id = ?")
@@ -564,6 +629,23 @@ const routes = {
       .run();
     if (res.meta.changes === 0) throw new HttpError(404, "Incidencia no encontrada");
     return loadState(db, site.id);
+  },
+
+  "GET /api/incidents/search": async (db, req, url, site) => {
+    const q = (url.searchParams.get("q") || "").trim();
+    if (!q) throw new HttpError(400, "Escribe un nº de ticket / despliegue / retirada para buscar");
+    if (q.length > 60) throw new HttpError(400, "La búsqueda es demasiado larga");
+    const { results } = await db
+      .prepare(
+        `SELECT a.id, a.ticket, a.note, a.created_at, a.jornada_id,
+                COALESCE(t.name, '(eliminado)') AS technician_name
+          FROM assignments a LEFT JOIN technicians t ON t.id = a.technician_id
+          WHERE a.site_id = ? AND a.ticket LIKE ? ESCAPE '\\'
+          ORDER BY a.created_at DESC LIMIT 30`
+      )
+      .bind(site.id, "%" + escapeLike(q) + "%")
+      .all();
+    return { query: q, results: results || [] };
   },
 
   "POST /api/jornada/advance": (db, req, url, site) => advanceDay(db, site.id),
